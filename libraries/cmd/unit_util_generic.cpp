@@ -257,7 +257,7 @@ int getPhysicsPriority(Unit *un) {
         //return ASTEROID_LOW_PRIORITY;
     }
     Unit *targ = un->Target();
-    if (_Universe->isPlayerStarship(targ)) {
+    if (targ && targ->IsPlayerShip()) {
         if (un->isJumppoint()) {
             return PLAYER_PRIORITY;
         } else if (UnitUtil::getDistance(targ, un) <= PLAYERTHREAT_DISTANCE_FACTOR * mymax(gun_range, missile_range)) {
@@ -819,6 +819,7 @@ float PercentOperational(const Cargo item, Unit *un, std::string name, std::stri
         unit_key = name + "__upgrades";
     }
 
+    // TODO: remove this code. We now have GetComponentByType.
     const std::string upgrade_category = UnitCSVFactory::GetVariable(unit_key, "Upgrade_Type", std::string());
     if(upgrade_category == "Hull") {
         return un->hull.PercentOperational();

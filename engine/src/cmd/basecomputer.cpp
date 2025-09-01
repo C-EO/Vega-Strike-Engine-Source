@@ -71,6 +71,7 @@ using VSFileSystem::SaveFile;
 #include "root_generic/configxml.h"
 #include "resource/manifest.h"
 #include "cmd/reload_utils.h"
+#include "components/component_utils.h"
 
 #include <boost/python.hpp>
 #include "configuration/configuration.h"
@@ -396,8 +397,29 @@ static float basicRepairPrice(void) {
     return price * g_game.difficulty;
 }
 
-static float SellPrice(float operational, float price) {
-    return usedValue(price);// - RepairPrice(operational, price);
+static double GetOperational(Unit *playerUnit, const Cargo *item) {
+    ComponentType type = GetComponentTypeFromName(item->GetName());
+    Component* component = playerUnit->GetComponentByType(type);
+
+    if(component) {
+        return component->PercentOperational();
+    }
+
+    return 0.0;
+}
+
+static double RepairPrice(Unit *playerUnit, const Cargo *item) {
+    // TODO: * configuration()->general.difficulty;
+
+    // TODO: add this to configuration
+    constexpr double kRepairPriceCoefficient = 0.8;
+
+    return kRepairPriceCoefficient * (1-GetOperational(playerUnit, item)) * item->GetPrice();
+}
+
+
+static float SellPrice(Unit *playerUnit, const Cargo *item) {
+    return usedValue(item->GetPrice()) - RepairPrice(playerUnit, item);
 }
 
 
@@ -1717,7 +1739,7 @@ bool BaseComputer::configureUpgradeCommitControls(const Cargo &item, Transaction
         if (m_player.GetUnit()
                 && UnitUtil::PercentOperational(item, m_player.GetUnit(), item.GetName(), item.GetCategory(), false) < 1) {
             if (m_base.GetUnit()) {
-                if (item.RepairPrice() <= ComponentsManager::credits) {
+                if (RepairPrice(m_player.GetUnit(), &item) <= ComponentsManager::credits) {
                     assert(commitFixButton != NULL);
                     if (commitFixButton) {
                         commitFixButton->setHidden(false);
@@ -1949,16 +1971,15 @@ void BaseComputer::updateTransactionControlsForSelection(TransactionList *tlist)
 
                 //********************************************************************************************
             {
-                double percent_working = UnitUtil::PercentOperational(item,
-                        m_player.GetUnit(), item.GetName(), item.GetCategory(), false);
+                double percent_working = GetOperational(m_player.GetUnit(), &item);
                 if (percent_working < 1) {
                     //IF DAMAGED
                     tempString = (boost::format("Damaged and Used value: #b#%1$.2f#-b, purchased for %2$.2f#n1.5#")
-                            % SellPrice(percent_working, baseUnit->PriceCargo(item.GetName()))
+                            % SellPrice(m_player.GetUnit(), &item)
                             % item.GetPrice())
                             .str();
                     descString += tempString;
-                    double repair_price = item.RepairPrice();
+                    double repair_price = RepairPrice(m_player.GetUnit(), &item);
 
                     tempString = (boost::format("Percent Working: #b#%1$.2f#-b, Repair Cost: %2$.2f#n1.5#")
                             % (percent_working * 100)
@@ -2085,8 +2106,8 @@ bool BaseComputer::isTransactionOK(const Cargo &originalItem, TransactionType tr
     if (!playerUnit) {
         return false;
     }
-    Cockpit *cockpit = _Universe->isPlayerStarship(playerUnit);
-    if (!cockpit) {
+
+    if (!playerUnit->IsPlayerShip()) {
         return false;
     }
     //Need to fix item so there is only one for cost calculations.
@@ -2639,7 +2660,7 @@ void BaseComputer::loadNewsControls(void) {
         //Get news from save game.
         Unit *playerUnit = m_player.GetUnit();
         if (playerUnit) {
-            const int playerNum = UnitUtil::isPlayerStarship(playerUnit);
+            const int playerNum = _Universe->whichPlayerStarship(playerUnit);
             int len = getSaveStringLength(playerNum, NEWS_NAME_LABEL);
             for (int i = len - 1; i >= 0; i--) {
                 picker->addCell(new SimplePickerCell(getSaveString(playerNum, NEWS_NAME_LABEL, i)));
@@ -2747,7 +2768,7 @@ void BaseComputer::loadMissionsMasterList(TransactionList &tlist) {
     tlist.masterList.clear();
 
     Unit *unit = _Universe->AccessCockpit()->GetParent();
-    int playerNum = UnitUtil::isPlayerStarship(unit);
+    int playerNum = _Universe->whichPlayerStarship(unit);
     if (playerNum < 0) {
         VS_LOG(error, "Docked ship not a player.");
         return;
@@ -2870,7 +2891,7 @@ bool BaseComputer::acceptMission(const EventCommandId &command, Control *control
         }
         return false;
     }
-    const int playernum = UnitUtil::isPlayerStarship(playerUnit);
+    const int playernum = _Universe->whichPlayerStarship(playerUnit);
     const size_t stringCount = getSaveStringLength(playernum, MISSION_NAMES_LABEL);
 
     assert(stringCount == getSaveStringLength(playernum, MISSION_SCRIPTS_LABEL));
@@ -3643,7 +3664,7 @@ bool BaseComputer::fixUpgrade(const EventCommandId &command, Control *control) {
     Unit *baseUnit = m_base.GetUnit();
 
     if (baseUnit && playerUnit && item) {
-        if (playerUnit->RepairUpgradeCargo(item, baseUnit)) {
+        if (playerUnit->RepairUpgradeCargo(item, baseUnit, RepairPrice(playerUnit, item))) {
             if (UnitUtil::PercentOperational(*item, playerUnit, item->GetName(), "upgrades/", false) < 1.0) {
                 emergency_downgrade_mode = "EMERGENCY MODE ";
             }
@@ -4176,8 +4197,8 @@ bool BaseComputer::sellShip(const EventCommandId &command, Control *control) {
     Unit *playerUnit = m_player.GetUnit();
     Unit *baseUnit = m_base.GetUnit();
     Cargo *item = selectedItem();
-    Cockpit *cockpit = _Universe->isPlayerStarship(playerUnit);
-    if (!(playerUnit && baseUnit && item && cockpit)) {
+    
+    if (!(playerUnit && baseUnit && item && playerUnit->IsPlayerShip())) {
         return true;
     }
     return ::sellShip(baseUnit, playerUnit, item->GetName(), this);
@@ -4217,6 +4238,7 @@ bool buyShip(Unit *baseUnit,
             swappingShipsIndex = -1;
         }
     } else {
+        // This is where we solve the bug where you can't own two ships of the same type
         Cockpit *cockpit = _Universe->AccessCockpit();
         for (size_t i = 1, n = cockpit->GetNumUnits(); i < n; ++i) {
             if (cockpit->GetUnitFileName(i) == content) {
@@ -4664,8 +4686,7 @@ bool BaseComputer::actionSaveGame(const EventCommandId &command, Control *contro
         }
     }
     if (player && ok) {
-        Cockpit *cockpit = _Universe->isPlayerStarship(player);
-        if (cockpit) {
+        if (player->IsPlayerShip()) {
             VSFileSystem::VSFile fp;
             VSFileSystem::VSError err = fp.OpenReadOnly(tmp, SaveFile);
             if (err > VSFileSystem::Ok) {
@@ -4733,16 +4754,13 @@ bool BaseComputer::actionLoadGame(const EventCommandId &command, Control *contro
     if (desc) {
         std::string tmp = desc->text();
         if (tmp.length() > 0) {
-            if (player) {
-                Cockpit *cockpit = _Universe->isPlayerStarship(player);
-                if (cockpit) {
-                    LoadSaveQuitConfirm *saver = new LoadSaveQuitConfirm(this,
-                            "Load",
-                            "Are you sure that you want to load this game?");
-                    saver->init();
-                    saver->run();
-                    return true;
-                }
+            if (player && player->IsPlayerShip()) {
+                LoadSaveQuitConfirm *saver = new LoadSaveQuitConfirm(this,
+                        "Load",
+                        "Are you sure that you want to load this game?");
+                saver->init();
+                saver->run();
+                return true;
             }
         }
     }

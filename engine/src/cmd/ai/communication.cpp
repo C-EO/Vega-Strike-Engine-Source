@@ -212,7 +212,7 @@ void FSM::Node::AddSound(std::string soundfile, unsigned char sex, float gain) {
             gains[index] = gain;
 
             // Preload sound if configured to do so
-            if (game_options()->comm_preload) {
+            if (configuration().cockpit_audio.comm_preload) {
                 GetSound(sex, multiple, gain);
             }
 
@@ -534,7 +534,7 @@ void LeadMe(Unit *un, string directive, string speech, bool changetarget) {
         Flightgroup *fg = un->getFlightgroup();
         if (fg) {
             if (fg->leader.GetUnit() != un) {
-                if ((!_Universe->isPlayerStarship(fg->leader.GetUnit())) || _Universe->isPlayerStarship(un)) {
+                if (!(fg->leader.GetUnit()->IsPlayerShip()) || un->IsPlayerShip()) {
                     fg->leader.SetUnit(un);
                 }
             }
